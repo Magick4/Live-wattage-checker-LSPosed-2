@@ -1,0 +1,13 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Output APKs (they are built artifacts, not sources)
+*.apk
+!gradle/wrapper/gradle-wrapper.jar
