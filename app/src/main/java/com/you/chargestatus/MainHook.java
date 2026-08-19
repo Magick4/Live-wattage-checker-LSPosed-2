@@ -183,10 +183,19 @@ public class MainHook implements IXposedHookLoadPackage {
 
             // Fallbacks for devices where sysfs is not readable from SystemUI.
             BatteryManager bm = (BatteryManager) ctx.getSystemService(Context.BATTERY_SERVICE);
-            if (voltageUv == null && bm != null) {
-                int v = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_VOLTAGE_NOW);
-                if (v > 0 && v != Integer.MIN_VALUE) voltageUv = (long) v * 1000L; // mV -> uV
-            }
+                        if (voltageUv == null) {
+                // BatteryManager has no public voltage property; read the
+                // sticky ACTION_BATTERY_CHANGED broadcast instead.
+                try {
+                    Intent bat = ctx.registerReceiver(null,
+                            new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+                    if (bat != null) {
+                        int v = bat.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1);
+                        if (v > 0) voltageUv = (long) v * 1000L; // mV -> uV
+                    }
+                } catch (Throwable ignored) {
+                }
+                        }
             if (currentUa == null && bm != null) {
                 int c = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
                 if (c != 0 && c != Integer.MIN_VALUE) currentUa = (long) c; // uA
