@@ -3,6 +3,7 @@ package com.you.chargestatus;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.res.Resources;
 import android.graphics.Color;
 import android.os.BatteryManager;
 import android.os.Handler;
@@ -34,13 +35,17 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  *
  * Designed for AOSP / near-stock ROMs (Android 12-14). The status bar clock is
  * com.android.systemui.statusbar.policy.Clock, inflated from status_bar.xml
- * directly inside a LinearLayout (status_bar_left_side).
+ * directly inside a LinearLayout (status_bar_left_side). On LineageOS-style
+ * ROMs several Clock views exist at once, so the label is attached only to the
+ * default one (@+id/clock) - see {@link #isPrimaryClock(android.view.View)}.
  */
 public class MainHook implements IXposedHookLoadPackage {
 
     private static final String LOG_TAG = "LiveWattage";
     private static final String LABEL_TAG = "live_wattage_label";
     private static final String CLOCK_CLASS = "com.android.systemui.statusbar.policy.Clock";
+    /** Resource entry name of the one clock we attach to (@+id/clock). */
+    private static final String CLOCK_ID_NAME = "clock";
 
     // Some OEMs expose the same battery nodes under /sys/class/power_supply/main/
     // instead of /battery/. First readable path wins.
@@ -92,11 +97,25 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void injectWattLabel(View clockView) {
+        // LineageOS-style ROMs inflate three Clock instances (@+id/clock,
+        // @+id/center_clock, @+id/right_clock) and hide the two the user did
+        // not pick. The Clock hook fires for all three, so without this gate
+        // the module renders three wattage labels.
+        if (!isPrimaryClock(clockView)) return;
+
         ViewGroup parent = (ViewGroup) clockView.getParent();
         if (parent == null) return; // not attached yet - onAttachedToWindow will retry
 
         // Guard against duplicate injection (two hook points / view recreation).
         if (parent.findViewWithTag(LABEL_TAG) != null) return;
+
+        // Window-wide guard: the clock and an already-injected label can end up
+        // in different containers after a theme/config change re-inflates part
+        // of the status bar, which the parent-level check above would miss.
+        View root = clockView.getRootView();
+        if (root instanceof ViewGroup && ((ViewGroup) root).findViewWithTag(LABEL_TAG) != null) {
+            return;
+        }
 
         // Find a LinearLayout to insert into. The stock status bar clock sits
         // directly inside a LinearLayout (status_bar_left_side); on other ROMs
@@ -150,13 +169,27 @@ public class MainHook implements IXposedHookLoadPackage {
         lp.gravity = Gravity.CENTER_VERTICAL;
         container.addView(wattLabel, clockIndex + 1, lp);
 
-        XposedBridge.log(LOG_TAG + ": label injected after clock");
+        XposedBridge.log(LOG_TAG + ": label injected after @id/" + CLOCK_ID_NAME);
 
         // Background reader thread - never blocks the UI thread.
-        HandlerThread bgThread = new HandlerThread("LiveWattageReader");
+        final HandlerThread bgThread = new HandlerThread("LiveWattageReader");
         bgThread.start();
         final Handler bgHandler = new Handler(bgThread.getLooper());
         final Handler uiHandler = new Handler(ctx.getMainLooper());
+
+        // Stop polling once the label goes away (status bar re-inflation),
+        // otherwise every re-injection would stack another live thread.
+        wattLabel.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View v) {
+            }
+
+            @Override
+            public void onViewDetachedFromWindow(View v) {
+                bgHandler.removeCallbacksAndMessages(null);
+                bgThread.quitSafely();
+            }
+        });
 
         bgHandler.post(new Runnable() {
             @Override
@@ -173,6 +206,54 @@ public class MainHook implements IXposedHookLoadPackage {
                 bgHandler.postDelayed(this, REFRESH_MS);
             }
         });
+    }
+
+    /**
+     * True only for the status bar's default left clock, {@code @+id/clock}.
+     *
+     * LineageOS (and derivatives such as crDroid / Evolution X) ship three
+     * Clock views in status_bar.xml - {@code @+id/clock},
+     * {@code @+id/center_clock} and {@code @+id/right_clock} - and toggle
+     * visibility based on the user's clock position setting. Hooking the Clock
+     * class fires for every one of them, so injection has to be restricted to
+     * the canonical one or the user sees the wattage three times.
+     *
+     * Unknown/obfuscated ids fall through as "allowed" so that ROMs which
+     * name their clock differently keep working as before.
+     */
+    private static boolean isPrimaryClock(View clockView) {
+        final int id = clockView.getId();
+        if (id == View.NO_ID) {
+            // Nothing to discriminate on - let the duplicate guards decide.
+            return true;
+        }
+        try {
+            Resources res = clockView.getResources();
+            int expected = res.getIdentifier(
+                    CLOCK_ID_NAME, "id", clockView.getContext().getPackageName());
+            if (expected != 0) {
+                if (id == expected) return true;
+                XposedBridge.log(LOG_TAG + ": skipping secondary clock @id/"
+                        + safeIdName(res, id));
+                return false;
+            }
+            // Package lookup failed - compare the entry name directly.
+            String name = res.getResourceEntryName(id);
+            if (CLOCK_ID_NAME.equals(name)) return true;
+            XposedBridge.log(LOG_TAG + ": skipping secondary clock @id/" + name);
+            return false;
+        } catch (Throwable t) {
+            // Resource not resolvable - can't tell them apart, allow it.
+            return true;
+        }
+    }
+
+    private static String safeIdName(Resources res, int id) {
+        try {
+            return res.getResourceEntryName(id);
+        } catch (Throwable t) {
+            return "0x" + Integer.toHexString(id);
+        }
     }
 
     private String computeLabel(Context ctx) {
