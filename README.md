@@ -17,10 +17,22 @@ devices/ROMs where sysfs is not readable from SystemUI.
 
 ## Getting the APK
 
-The easiest way is the **Build APK** GitHub Actions workflow:
+The easiest way is the **Build APK** GitHub Actions workflow, which builds both a
+debug and a release APK and uploads them as run artifacts. A ready-made workflow
+file is included at [`ci/build.yml`](ci/build.yml).
+
+> Note: GitHub only runs workflows that live in `.github/workflows/`. The bot
+> that set up this repo cannot write to that path, so the workflow is stored at
+> `ci/build.yml`. One-time activation (30 seconds):
+
+1. In the repo, go to the **Actions** tab → **New workflow** → **set up a workflow yourself**.
+2. Replace the generated file's content with the content of `ci/build.yml`, then **Commit changes**.
+
+After that, every push to `main` builds the APKs automatically, and you can also
+run **Actions → Build APK → Run workflow** on demand:
 
 1. Open the **Actions** tab of this repository.
-2. Select **Build APK** → **Run workflow** → **Run workflow** (or just push to `main`).
+2. Select **Build APK** → **Run workflow** → **Run workflow**.
 3. When the job finishes, open the run and download the
    **`live-wattage-debug`** (or **`live-wattage-release`**) artifact.
 4. Extract the `.apk` from the downloaded zip and install it on the phone.
